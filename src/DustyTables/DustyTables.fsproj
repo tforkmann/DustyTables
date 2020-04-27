@@ -23,6 +23,7 @@
         <Tailcalls>true</Tailcalls>
     </PropertyGroup>
     <ItemGroup>
+        <Compile Include="Types.fs" />
         <Compile Include="Sql.fs" />
         <Compile Include="OptionWorkflow.fs" />
     </ItemGroup>

@@ -5,23 +5,6 @@ open System.Threading.Tasks
 open System.Data
 open Microsoft.Data.SqlClient
 
-[<RequireQualifiedAccess>]
-type SqlValue =
-    | TinyInt of uint8
-    | Smallint of int16
-    | Int of int
-    | Bigint of int64
-    | String of string
-    | DateTime of DateTime
-    | DateTimeOffset of DateTimeOffset
-    | Bool of bool
-    | Float of double
-    | Decimal of decimal
-    | Binary of byte[]
-    | UniqueIdentifier of Guid
-    | Table of string * DataTable
-    | Null
-
 type SqlRow = list<string * SqlValue>
 
 type SqlTable = list<SqlRow>
