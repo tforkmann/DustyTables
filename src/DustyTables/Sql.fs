@@ -5,6 +5,57 @@ open System.Threading.Tasks
 open System.Data
 open Microsoft.Data.SqlClient
 
+module internal Utils =
+    let sqlMap (option: 'a option) (f: 'a -> SqlValue) : SqlValue =
+        Option.defaultValue SqlValue.Null (Option.map f option)
+
+module Async =
+    let map f comp =
+        async {
+            let! result = comp
+            return f result
+        }
+
+type Sql() =
+    static member int(value: int) = SqlValue.Int value
+    static member intOrNone(value: int option) = Utils.sqlMap value Sql.int
+    static member string(value: string) = SqlValue.String (if isNull value then String.Empty else value)
+    static member stringOrNone(value: string option) = Utils.sqlMap value Sql.string
+    static member text(value: string) = SqlValue.String value
+    static member textOrNone(value: string option) = Sql.stringOrNone value
+    static member bit(value: bool) = SqlValue.Bit value
+    static member bitOrNone(value: bool option) = Utils.sqlMap value Sql.bit
+    static member bool(value: bool) = SqlValue.Bool value
+    static member boolOrNone(value: bool option) = Utils.sqlMap value Sql.bool
+    static member float(value: double) = SqlValue.Float value
+    static member floatOrNone(value: double option) = Utils.sqlMap value Sql.float
+    static member decimal(value: decimal) = SqlValue.Decimal value
+    static member decimalOrNone(value: decimal option) = Utils.sqlMap value Sql.decimal
+    static member money(value: decimal) = SqlValue.Decimal value
+    static member moneyOrNone(value: decimal option) = Sql.decimalOrNone value
+    static member int8(value: uint8) = SqlValue.TinyInt value
+    static member int8OrNone(value: uint8 option) = Utils.sqlMap value Sql.int8
+    static member int16(value: int16) = SqlValue.Smallint value
+    static member int16OrNone(value: int16 option) = Utils.sqlMap value Sql.int16
+    static member int64(value: int64) = SqlValue.Bigint value
+    static member int64OrNone(value: int64 option) = Utils.sqlMap value Sql.int64
+    static member dateTime(value: DateTime) = SqlValue.DateTime value
+    static member dateTimeOrNone(value: DateTime option) = Utils.sqlMap value Sql.dateTime
+    static member dateTimetz(value: DateTime) = SqlValue.DateTimeTZ value
+    static member dateTimetzOrNone(value: DateTime option) = Utils.sqlMap value Sql.dateTimetz
+    static member uuid(value: Guid) = SqlValue.UniqueIdentifier value
+    static member uuidOrNone(value: Guid option) = Utils.sqlMap value Sql.uuid
+    static member uuidArray(value: Guid []) = SqlValue.UniqueIdentifierArray value
+    static member uuidArrayOrNone(value: Guid [] option) = Utils.sqlMap value Sql.uuidArray
+    static member bytea(value: byte[]) = SqlValue.Binary value
+    static member byteaOrNone(value: byte[] option) = Utils.sqlMap value Sql.bytea
+    static member stringArray(value: string[]) = SqlValue.StringArray value
+    static member stringArrayOrNone(value: string[] option) = Utils.sqlMap value Sql.stringArray
+    static member intArray(value: int[]) = SqlValue.IntArray value
+    static member intArrayOrNone(value: int[] option) = Utils.sqlMap value Sql.intArray
+    static member dbnull = SqlValue.Null
+
+
 type SqlRow = list<string * SqlValue>
 
 type SqlTable = list<SqlRow>
@@ -15,7 +66,7 @@ module Sql =
 
     type SqlProps = private {
         ConnectionString : string
-        SqlQuery : string option
+        SqlQuery : string list
         Parameters : SqlRow
         IsFunction : bool
         Timeout: int option
@@ -23,9 +74,9 @@ module Sql =
     }
 
     let private defaultProps() = {
-        ConnectionString = "";
-        SqlQuery = None
-        Parameters = [];
+        ConnectionString = ""
+        SqlQuery = []
+        Parameters = []
         IsFunction = false
         NeedPrepare = false
         Timeout = None
@@ -33,9 +84,9 @@ module Sql =
 
     let connect constr  = { defaultProps() with ConnectionString = constr }
 
-    let query (sqlQuery: string) props = { props with SqlQuery = Some sqlQuery }
-    let queryStatements (sqlQuery: string list) props = { props with SqlQuery = Some (String.concat "\n" sqlQuery) }
-    let storedProcedure (sqlQuery: string) props = { props with SqlQuery = Some sqlQuery; IsFunction = true }
+    let query (sql: string) props = { props with SqlQuery = [sql] }
+    let queryStatements (sqlQuery: string list) props = { props with SqlQuery = sqlQuery }
+    let storedProcedure (sql: string) props = { props with SqlQuery = [sql]; IsFunction = true }
     let prepare  props = { props with NeedPrepare = true}
     let parameters ls props = { props with Parameters = ls }
     let timeout n props = { props with Timeout = Some n }
@@ -266,14 +317,19 @@ module Sql =
                 | SqlValue.Int i -> upcast i
                 | SqlValue.Bigint x -> upcast x
                 | SqlValue.DateTime date -> upcast date
+                | SqlValue.DateTimeTZ date -> upcast date
                 | SqlValue.Float n -> upcast n
+                | SqlValue.Bit b -> upcast b
                 | SqlValue.Bool b -> upcast b
                 | SqlValue.Decimal x -> upcast x
                 | SqlValue.Null -> upcast DBNull.Value
                 | SqlValue.Binary bytes -> upcast bytes
                 | SqlValue.UniqueIdentifier guid -> upcast guid
+                | SqlValue.UniqueIdentifierArray guid -> upcast guid
                 | SqlValue.DateTimeOffset x -> upcast x
                 | SqlValue.Table (_, x) -> upcast x
+                | SqlValue.IntArray x -> upcast x
+                | SqlValue.StringArray x -> upcast x
 
             // prepend param name with @ if it doesn't already
             let paramName =
@@ -301,10 +357,10 @@ module Sql =
         populateRow cmd props.Parameters
 
     let executeReader (read: SqlDataReader -> Option<'t>) (props: SqlProps) : 't list =
-        if Option.isNone props.SqlQuery then failwith "No query provided to execute"
+        if List.isEmpty props.SqlQuery then failwith "No query provided to execute. Please use Sql.query"
         use connection = new SqlConnection(props.ConnectionString)
         connection.Open()
-        use command = new SqlCommand(Option.get props.SqlQuery, connection)
+        use command = new SqlCommand(List.head props.SqlQuery, connection)
         if props.NeedPrepare then command.Prepare()
         populateCmd command props
         use reader = command.ExecuteReader()
@@ -449,10 +505,10 @@ module Sql =
 
     let executeReaderSafe (read: SqlDataReader -> Option<'t>) (props: SqlProps) =
         try
-            if Option.isNone props.SqlQuery then failwith "No query provided to execute"
+            if List.isEmpty props.SqlQuery then failwith "No query provided to execute. Please use Sql.query"
             use connection = new SqlConnection(props.ConnectionString)
             connection.Open()
-            use command = new SqlCommand(Option.get props.SqlQuery, connection)
+            use command = new SqlCommand(List.head props.SqlQuery, connection)
             if props.NeedPrepare then command.Prepare()
             populateCmd command props
             use reader = command.ExecuteReader()
@@ -466,10 +522,10 @@ module Sql =
 
     let executeReaderAsync (read: SqlDataReader -> Option<'t>) (props: SqlProps) : Async<'t list> =
         async {
-            if Option.isNone props.SqlQuery then failwith "No query provided to execute"
+            if List.isEmpty props.SqlQuery then failwith "No query provided to execute. Please use Sql.query"
             use connection = new SqlConnection(props.ConnectionString)
             do! Async.AwaitTask (connection.OpenAsync())
-            use command = new SqlCommand(Option.get props.SqlQuery, connection)
+            use command = new SqlCommand(List.head props.SqlQuery, connection)
             if props.NeedPrepare then command.Prepare()
             populateCmd command props
             use! reader = Async.AwaitTask (command.ExecuteReaderAsync())
@@ -490,10 +546,10 @@ module Sql =
         }
 
     let executeTable (props: SqlProps) : SqlTable =
-        if Option.isNone props.SqlQuery then failwith "No query provided to execute"
+        if List.isEmpty props.SqlQuery then failwith "No query provided to execute. Please use Sql.query"
         use connection = new SqlConnection(props.ConnectionString)
         connection.Open()
-        use command = new SqlCommand(Option.get props.SqlQuery, connection)
+        use command = new SqlCommand(List.head props.SqlQuery, connection)
         if props.NeedPrepare then command.Prepare()
         populateCmd command props
         use reader = command.ExecuteReader()
@@ -505,10 +561,10 @@ module Sql =
 
     let executeTableTask (props: SqlProps) =
         task {
-            if Option.isNone props.SqlQuery then failwith "No query provided to execute..."
+            if List.isEmpty props.SqlQuery then failwith "No query provided to execute. Please use Sql.query"
             use connection = new SqlConnection(props.ConnectionString)
             do! connection.OpenAsync()
-            use command = new SqlCommand(Option.get props.SqlQuery, connection)
+            use command = new SqlCommand(List.head props.SqlQuery, connection)
             if props.NeedPrepare then command.Prepare()
             do populateCmd command props
             use! reader = command.ExecuteReaderAsync()
@@ -522,10 +578,10 @@ module Sql =
     let executeTableSafeTask (props: SqlProps) =
         task {
             try
-                if Option.isNone props.SqlQuery then failwith "No query provided to execute"
+                if List.isEmpty props.SqlQuery then failwith "No query provided to execute. Please use Sql.query"
                 use connection = new SqlConnection(props.ConnectionString)
                 do! connection.OpenAsync()
-                use command = new SqlCommand(Option.get props.SqlQuery, connection)
+                use command = new SqlCommand(List.head props.SqlQuery, connection)
                 if props.NeedPrepare then command.Prepare()
                 do populateCmd command props
                 use! reader = command.ExecuteReaderAsync()
@@ -542,20 +598,20 @@ module Sql =
     let multiline xs = String.concat Environment.NewLine xs
 
     let executeScalar (props: SqlProps) : SqlValue =
-        if Option.isNone props.SqlQuery then failwith "No query provided to execute..."
+        if List.isEmpty props.SqlQuery then failwith "No query provided to execute. Please use Sql.query"
         use connection = new SqlConnection(props.ConnectionString)
         connection.Open()
-        use command = new SqlCommand(Option.get props.SqlQuery, connection)
+        use command = new SqlCommand(List.head props.SqlQuery, connection)
         if props.NeedPrepare then command.Prepare()
         populateCmd command props
         command.ExecuteScalar()
         |> readValue
 
     let executeNonQuery (props: SqlProps) : int =
-        if Option.isNone props.SqlQuery then failwith "No query provided to execute..."
+        if List.isEmpty props.SqlQuery then failwith "No query provided to execute. Please use Sql.query"
         use connection = new SqlConnection(props.ConnectionString)
         connection.Open()
-        use command = new SqlCommand(Option.get props.SqlQuery, connection)
+        use command = new SqlCommand(List.head props.SqlQuery, connection)
         if props.NeedPrepare then command.Prepare()
         populateCmd command props
         command.ExecuteNonQuery()
@@ -568,7 +624,7 @@ module Sql =
         task {
             use connection = new SqlConnection(props.ConnectionString)
             do! connection.OpenAsync()
-            use command = new SqlCommand(Option.get props.SqlQuery, connection)
+            use command = new SqlCommand(List.head props.SqlQuery, connection)
             if props.NeedPrepare then command.Prepare()
             do populateCmd command props
             return! command.ExecuteNonQueryAsync()
@@ -583,7 +639,7 @@ module Sql =
             try
                 use connection = new SqlConnection(props.ConnectionString)
                 do! connection.OpenAsync()
-                use command = new SqlCommand(Option.get props.SqlQuery, connection)
+                use command = new SqlCommand(List.head props.SqlQuery, connection)
                 if props.NeedPrepare then command.Prepare()
                 do populateCmd command props
                 let! result = command.ExecuteNonQueryAsync()
@@ -602,10 +658,10 @@ module Sql =
 
     let executeScalarTask (props: SqlProps) =
         task {
-            if Option.isNone props.SqlQuery then failwith "No query provided to execute..."
+            if List.isEmpty props.SqlQuery then failwith "No query provided to execute. Please use Sql.query"
             use connection = new SqlConnection(props.ConnectionString)
             do! connection.OpenAsync()
-            use command = new SqlCommand(Option.get props.SqlQuery, connection)
+            use command = new SqlCommand(List.head props.SqlQuery, connection)
             if props.NeedPrepare then command.Prepare()
             do populateCmd command props
             let! value = command.ExecuteScalarAsync()
@@ -620,10 +676,10 @@ module Sql =
     let executeScalarSafeTask (props: SqlProps) =
         task {
             try
-                if Option.isNone props.SqlQuery then failwith "No query provided to execute..."
+                if List.isEmpty props.SqlQuery then failwith "No query provided to execute. Please use Sql.query"
                 use connection = new SqlConnection(props.ConnectionString)
                 do! connection.OpenAsync()
-                use command = new SqlCommand(Option.get props.SqlQuery, connection)
+                use command = new SqlCommand(List.head props.SqlQuery, connection)
                 if props.NeedPrepare then command.Prepare()
                 do populateCmd command props
                 let! value = command.ExecuteScalarAsync()
